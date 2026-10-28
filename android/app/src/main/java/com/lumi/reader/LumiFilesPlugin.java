@@ -115,7 +115,9 @@ public class LumiFilesPlugin extends Plugin {
         try {
             File file = bookFile(call.getString("id"));
             if (!file.isFile()) throw new Exception("Файл книги не найден. Добавьте PDF заново.");
-            JSObject result = new JSObject(); result.put("path", file.getAbsolutePath()); call.resolve(result);
+            JSObject result = new JSObject();
+            result.put("url", getBridge().getLocalUrl() + "/_lumi_pdf_/" + call.getString("id"));
+            call.resolve(result);
         } catch (Exception e) { call.reject(e.getMessage(), e); }
     }
     @PluginMethod public void remove(PluginCall call) {

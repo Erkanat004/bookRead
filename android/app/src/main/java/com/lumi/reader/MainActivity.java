@@ -9,6 +9,7 @@ public class MainActivity extends BridgeActivity {
     @Override public void onCreate(Bundle savedInstanceState) {
         registerPlugin(LumiFilesPlugin.class);
         super.onCreate(savedInstanceState);
+        getBridge().setWebViewClient(new LumiWebViewClient(getBridge()));
         getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
             @Override public void handleOnBackPressed() {
                 PluginHandle handle = getBridge().getPlugin("LumiFiles");
@@ -18,3 +19,4 @@ public class MainActivity extends BridgeActivity {
         });
     }
 }
+
