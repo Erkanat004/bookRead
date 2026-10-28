@@ -37,7 +37,8 @@ public class LumiWebViewClient extends BridgeWebViewClient {
         headers.put("Cache-Control", "no-store");
         headers.put("X-Content-Type-Options", "nosniff");
         if (!id.matches("[a-zA-Z0-9-]{1,80}") || !"GET".equals(request.getMethod())) return empty(404, "Not Found", headers);
-        File file = new File(books, id + ".pdf");
+        File file = new File(books, id + ".book");
+        if (!file.isFile()) file = new File(books, id + ".pdf");
         if (!file.isFile()) return empty(404, "Not Found", headers);
         long size = file.length();
         headers.put("Accept-Ranges", "bytes");
@@ -57,7 +58,7 @@ public class LumiWebViewClient extends BridgeWebViewClient {
             long length = end - start + 1;
             headers.put("Content-Length", Long.toString(length));
             if (range != null) headers.put("Content-Range", "bytes " + start + "-" + end + "/" + size);
-            return new WebResourceResponse("application/pdf", null, range == null ? 200 : 206, range == null ? "OK" : "Partial Content", headers, new Slice(file, start, length));
+            return new WebResourceResponse("application/octet-stream", null, range == null ? 200 : 206, range == null ? "OK" : "Partial Content", headers, new Slice(file, start, length));
         } catch (IllegalArgumentException e) {
             headers.put("Content-Range", "bytes */" + size);
             return empty(416, "Range Not Satisfiable", headers);
@@ -94,4 +95,3 @@ public class LumiWebViewClient extends BridgeWebViewClient {
         @Override public void close() throws IOException { file.close(); }
     }
 }
-

@@ -41,7 +41,7 @@ export async function fileSource(book) {
   if (native) return { url: (await Files.locate({ id: book.id })).url };
   const blob = await operation('files', 'readonly', s => s.get(book.id));
   if (!blob) throw new Error('Файл книги не найден. Добавьте его заново.');
-  return { url: URL.createObjectURL(blob), revoke: true };
+  return { url: URL.createObjectURL(blob), revoke: true, blob };
 }
 export async function removeFile(id) {
   if (native) await Files.remove({ id });
@@ -51,4 +51,3 @@ export function onAndroidBack(callback) {
   if (native) return Files.addListener('back', callback);
 }
 export async function exitApp() { if (native) await Files.exit(); }
-

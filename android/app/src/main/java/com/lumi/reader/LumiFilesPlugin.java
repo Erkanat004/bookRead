@@ -24,7 +24,6 @@ import java.util.concurrent.Executors;
 /** App-private PDF copies. No broad storage permission, no base64 bridge payloads. */
 @CapacitorPlugin(name = "LumiFiles")
 public class LumiFilesPlugin extends Plugin {
-    private static final long MAX_SIZE = 512L * 1024 * 1024;
     private final ExecutorService io = Executors.newSingleThreadExecutor();
     private boolean picking = false;
 
@@ -35,7 +34,9 @@ public class LumiFilesPlugin extends Plugin {
     }
     private File bookFile(String id) throws Exception {
         if (id == null || !id.matches("[a-zA-Z0-9-]{1,80}")) throw new Exception("Некорректный идентификатор книги.");
-        return new File(booksDir(), id + ".pdf");
+        File file = new File(booksDir(), id + ".book");
+        File legacy = new File(booksDir(), id + ".pdf");
+        return !file.exists() && legacy.exists() ? legacy : file;
     }
     private AtomicFile libraryFile() {
         return new AtomicFile(new File(getContext().getFilesDir(), "library.json"));
@@ -46,7 +47,7 @@ public class LumiFilesPlugin extends Plugin {
         picking = true;
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
-        intent.setType("application/pdf");
+        intent.setType("*/*");
         intent.putExtra(Intent.EXTRA_LOCAL_ONLY, true);
         try { startActivityForResult(call, intent, "picked"); }
         catch (Exception e) { picking = false; call.reject("Не удалось открыть выбор файлов.", e); }
@@ -73,7 +74,7 @@ public class LumiFilesPlugin extends Plugin {
                         if (si >= 0 && !cursor.isNull(si)) declaredSize = cursor.getLong(si);
                     }
                 }
-                if (declaredSize > MAX_SIZE) throw new Exception("Максимальный размер книги — 512 МБ.");
+                if (!name.toLowerCase(java.util.Locale.ROOT).matches(".*\\.(pdf|epub|fb2|zip|txt|docx|odt|rtf|html?|md|markdown|cbz|png|jpe?g|webp|gif|bmp)$")) throw new Exception("Этот формат пока не поддерживается. Выберите книгу, документ или изображение.");
                 if (declaredSize > 0 && booksDir().getUsableSpace() < declaredSize + 16L * 1024 * 1024) throw new Exception("Недостаточно свободной памяти для копии книги.");
                 String id = UUID.randomUUID().toString();
                 target = bookFile(id);
@@ -83,12 +84,11 @@ public class LumiFilesPlugin extends Plugin {
                 int headerLength = 0;
                 try (InputStream input = getContext().getContentResolver().openInputStream(uri);
                      FileOutputStream output = new FileOutputStream(temporary)) {
-                    if (input == null) throw new Exception("Не удалось прочитать PDF.");
+                    if (input == null) throw new Exception("Не удалось прочитать файл.");
                     byte[] buffer = new byte[64 * 1024];
                     int count;
                     while ((count = input.read(buffer)) != -1) {
                         size += count;
-                        if (size > MAX_SIZE) throw new Exception("Максимальный размер книги — 512 МБ.");
                         if (headerLength < header.length) {
                             int length = Math.min(count, header.length - headerLength);
                             System.arraycopy(buffer, 0, header, headerLength, length);
@@ -98,15 +98,15 @@ public class LumiFilesPlugin extends Plugin {
                     }
                     output.getFD().sync();
                 }
-                if (!new String(header, 0, headerLength, StandardCharsets.ISO_8859_1).contains("%PDF-")) throw new Exception("Выбранный файл не является PDF.");
-                if (!temporary.renameTo(target)) throw new Exception("Не удалось сохранить PDF.");
+                if (name.toLowerCase(java.util.Locale.ROOT).endsWith(".pdf") && !new String(header, 0, headerLength, StandardCharsets.ISO_8859_1).contains("%PDF-")) throw new Exception("Выбранный файл не является PDF.");
+                if (!temporary.renameTo(target)) throw new Exception("Не удалось сохранить файл.");
                 JSObject data = new JSObject();
                 data.put("id", id); data.put("name", name); data.put("size", size);
                 call.resolve(data);
             } catch (Exception e) {
                 if (temporary != null) temporary.delete();
                 if (target != null) target.delete();
-                call.reject(e.getMessage() == null ? "Ошибка импорта PDF." : e.getMessage(), e);
+                call.reject(e.getMessage() == null ? "Ошибка импорта файла." : e.getMessage(), e);
             }
         });
     }
@@ -114,7 +114,7 @@ public class LumiFilesPlugin extends Plugin {
     @PluginMethod public void locate(PluginCall call) {
         try {
             File file = bookFile(call.getString("id"));
-            if (!file.isFile()) throw new Exception("Файл книги не найден. Добавьте PDF заново.");
+            if (!file.isFile()) throw new Exception("Файл книги не найден. Добавьте его заново.");
             JSObject result = new JSObject();
             result.put("url", getBridge().getLocalUrl() + "/_lumi_pdf_/" + call.getString("id"));
             call.resolve(result);
@@ -162,4 +162,3 @@ public class LumiFilesPlugin extends Plugin {
     }
     @Override protected void handleOnDestroy() { io.shutdown(); }
 }
-

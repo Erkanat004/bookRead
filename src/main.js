@@ -1,7 +1,9 @@
 import './style.css';
+import './reading.css';
 import { getDocument, GlobalWorkerOptions } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { native, loadState, saveState, importNative, putFile, fileSource, removeFile, onAndroidBack, exitApp } from './storage.js';
-import { MAX_FILE_SIZE, clamp, progress, cleanTitle, readableSize, orderedBooks } from './model.js';
+import { clamp, progress, cleanTitle, readableSize, orderedBooks, fileFormat } from './model.js';
+import { openEbook } from './ebooks.js';
 
 GlobalWorkerOptions.workerSrc = '/pdfjs/pdf.worker.min.mjs';
 const $ = id => document.getElementById(id);
@@ -12,8 +14,8 @@ const paths = {
   list:'M9 6h12M9 12h12M9 18h12M3 6h1M3 12h1M3 18h1', more:'M5 12h.01M12 12h.01M19 12h.01'
 };
 const icon = name => `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${paths[name]}"/></svg>`;
-for (const [id, name] of Object.entries({add:'plus',searchIcon:'search',back:'left',bookmark:'bookmark',bookmarks:'list',previous:'left',next:'right'})) $(id).innerHTML = icon(name);
-let state = { version:1, books:[] }, active = null, pdf = null, loadingTask = null, source = null;
+for (const [id, name] of Object.entries({add:'plus',searchIcon:'search',back:'left',contents:'list',bookmark:'bookmark',bookmarks:'list',previous:'left',next:'right'})) $(id).innerHTML = icon(name);
+let state = { version:1, books:[] }, active = null, pdf = null, ebook = null, loadingTask = null, source = null;
 let zoom = 1, renderJob = null, renderVersion = 0, opening = false, importing = false, storageReady = false;
 let theme = localStorage.getItem('lumi-theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
 let toastTimer;
@@ -28,7 +30,7 @@ function applyTheme() {
 }
 applyTheme();
 $('theme').onclick = () => { theme = theme === 'dark' ? 'light' : 'dark'; localStorage.setItem('lumi-theme', theme); applyTheme(); };
-function cover(book) { return `<div class="cover">${book.cover ? `<img src="${escape(book.cover)}" alt="" loading="lazy" decoding="async">` : `<span class="cover-placeholder">${escape(book.title)}</span>`}</div>`; }
+function cover(book) { return `<div class="cover">${book.cover ? `<img src="${escape(book.cover)}" alt="" loading="lazy" decoding="async">` : `<span class="cover-placeholder"><span>${escape(book.title)}</span><small>${escape((book.format||'pdf').replace('fb2zip','FB2 · ZIP').toUpperCase())} · LUMI</small></span>`}</div>`; }
 function paintLibrary() {
   const books = orderedBooks(state.books, $('search').value, $('sort').value);
   $('count').textContent = state.books.length;
@@ -78,24 +80,33 @@ function pdfTask(url) {
   return getDocument({ url, cMapUrl:'/pdfjs/cmaps/', cMapPacked:true, standardFontDataUrl:'/pdfjs/standard_fonts/', wasmUrl:'/pdfjs/wasm/', isEvalSupported:false, enableXfa:false, disableAutoFetch:true, disableStream:true, rangeChunkSize:262144 });
 }
 async function importOne(info, file) {
-  if (info.size > MAX_FILE_SIZE) throw new Error('Максимальный размер книги — 512 МБ.');
-  if (file) { const head = new TextDecoder().decode(await file.slice(0,1024).arrayBuffer()); if (!head.includes('%PDF-')) throw new Error('Выбранный файл не является PDF.'); }
+  if(!info.size)throw new Error('Выбранный файл пуст.');
+  if (file && fileFormat(info.name)==='pdf') { const head = new TextDecoder().decode(await file.slice(0,1024).arrayBuffer()); if (!head.includes('%PDF-')) throw new Error('Выбранный файл не является PDF.'); }
   let src, task, doc, committed = false;
   try {
+    info.format=fileFormat(info.name);
     if (file) await putFile(info.id, file);
     src = await fileSource(info);
+    if(info.format!=='pdf') {
+      doc=await openEbook(src,info);await doc.getPage(1);
+      const book={id:info.id,format:info.format,unit:doc.unit,title:(doc.title||cleanTitle(info.name)).slice(0,160),author:doc.author,size:info.size,pages:doc.numPages,page:1,bookmarks:[],cover:doc.cover,addedAt:Date.now(),openedAt:0,scroll:0};
+      state.books.push(book);
+      if(!await persist()){state.books.pop();throw new Error('Книга не сохранена. Проверьте свободное место.');}
+      committed=true;paintLibrary();return;
+    }
     task = pdfTask(src.url); doc = await task.promise;
     const page = await doc.getPage(1); const v = page.getViewport({scale:1});
     const canvas = document.createElement('canvas'); const viewport = page.getViewport({scale: Math.min(300/v.width,450/v.height)});
     canvas.width = Math.ceil(viewport.width); canvas.height = Math.ceil(viewport.height);
     await page.render({canvasContext:canvas.getContext('2d'),viewport,background:'rgb(255,255,255)'}).promise;
-    const book = { id:info.id,title:cleanTitle(info.name).slice(0,160),size:info.size,pages:doc.numPages,page:1,bookmarks:[],cover:canvas.toDataURL('image/jpeg',.78),addedAt:Date.now(),openedAt:0 };
+    const book = { id:info.id,format:'pdf',title:cleanTitle(info.name).slice(0,160),size:info.size,pages:doc.numPages,page:1,bookmarks:[],cover:canvas.toDataURL('image/jpeg',.78),addedAt:Date.now(),openedAt:0 };
     canvas.width = canvas.height = 0;
     state.books.push(book);
     if (!await persist()) { state.books.pop(); throw new Error('Книга не сохранена: недостаточно памяти или ошибка хранилища.'); }
     committed = true; paintLibrary();
   } finally {
     if (task) await task.destroy().catch(() => {});
+    if(info.format!=='pdf')await doc?.dispose();
     if (src?.revoke) URL.revokeObjectURL(src.url);
     if (!committed) await removeFile(info.id).catch(() => {});
   }
@@ -105,7 +116,7 @@ async function addBooks() {
   if (!native) return $('fileInput').click();
   importing = true;
   try {
-    busy(true,'Копируем PDF в библиотеку…');
+    busy(true,'Копируем книгу в библиотеку…');
     // Native import is a streamed copy; no PDF bytes cross the Capacitor bridge.
     const info = await importNative();
     busy(true); await importOne(info); toast('Книга добавлена в библиотеку');
@@ -126,6 +137,8 @@ $('fileInput').onchange = async () => {
 async function disposePdf() {
   renderVersion++; renderJob?.cancel(); renderJob = null;
   const task = loadingTask; loadingTask = null; pdf = null;
+  if(ebook)await ebook.dispose();ebook=null;
+  $('textPage').innerHTML='';$('textPage').hidden=true;$('pageWrap').hidden=false;
   if (task) await task.destroy().catch(() => {});
   if (source?.revoke) URL.revokeObjectURL(source.url);
   source = null; $('pageCanvas').width = $('pageCanvas').height = 0;
@@ -135,11 +148,14 @@ async function openBook(id) {
   const book = state.books.find(b => b.id === id); if (!book) { opening = false; return; }
   busy(true,'Открываем книгу…');
   try {
-    source = await fileSource(book); loadingTask = pdfTask(source.url); pdf = await loadingTask.promise;
-    active = book; active.pages = pdf.numPages; active.page = clamp(active.page,1,pdf.numPages); zoom = 1;
+    source = await fileSource(book);
+    if((book.format||'pdf')==='pdf'){loadingTask=pdfTask(source.url);pdf=await loadingTask.promise;}
+    else ebook=await openEbook(source,{...book,name:book.title});
+    active = book; active.pages = (pdf||ebook).numPages; active.page = clamp(active.page,1,active.pages); zoom = 1;
+    $('contents').hidden=!ebook?.toc.length;
     $('readerTitle').textContent = active.title; $('reader').hidden = false; $('library').hidden = true;
     document.body.style.overflow = 'hidden'; await renderPage();
-    active.openedAt = Date.now(); await persist();
+    active.openedAt = Date.now(); updateControls(); await persist();
     $('back').focus();
   } catch(e) { toast(pdfError(e)); active = null; await disposePdf(); $('reader').hidden = true; $('library').hidden = false; document.body.style.overflow = ''; }
   finally { busy(false); opening = false; }
@@ -154,18 +170,37 @@ $('back').onclick = closeReader;
 function updateControls() {
   if (!active) return;
   $('pageNumber').textContent = `${active.page} / ${active.pages}`;
-  $('readerSubtitle').textContent = `СТРАНИЦА ${active.page} ИЗ ${active.pages}`;
+  $('readerSubtitle').textContent = `${ebook?.unit?.toUpperCase()||'СТРАНИЦА'} ${active.page} ИЗ ${active.pages}`;
   $('progress').max = active.pages; $('progress').value = active.page;
   $('percent').textContent = `${progress(active)}% прочитано`;
   $('previous').disabled = active.page <= 1; $('next').disabled = active.page >= active.pages;
-  $('zoomReset').textContent = `${Math.round(zoom*100)}%`;
+  const textMode=ebook&&!ebook.imageOnly;
+  $('zoomReset').textContent = textMode?`${Math.round(18*zoom)} пт`:`${Math.round(zoom*100)}%`;
+  $('zoomIn').setAttribute('aria-label',textMode?'Увеличить размер текста':'Увеличить масштаб');
+  $('zoomOut').setAttribute('aria-label',textMode?'Уменьшить размер текста':'Уменьшить масштаб');
   $('zoomOut').disabled = zoom <= 1; $('zoomIn').disabled = zoom >= 3;
   const marked = active.bookmarks.includes(active.page);
   $('bookmark').setAttribute('aria-pressed', marked);
   $('bookmark').setAttribute('aria-label',marked ? 'Удалить закладку' : 'Добавить закладку');
 }
 async function renderPage() {
-  if (!pdf || !active) return false;
+  if ((!pdf&&!ebook) || !active) return false;
+  if(ebook) {
+    const version=++renderVersion;$('pageLoading').hidden=false;updateControls();
+    try {
+      const html=await ebook.getPage(active.page);
+      if(version!==renderVersion||!active)return false;
+      $('pageWrap').hidden=true;$('textPage').hidden=false;
+      $('textPage').classList.toggle('image-mode',ebook.imageOnly);
+      $('textPage').style.fontSize=`${18*zoom}px`;
+      $('textPage').style.setProperty('--image-zoom',zoom);
+      $('textPage').innerHTML=html;
+      await Promise.allSettled([...$('textPage').querySelectorAll('img')].map(img=>img.decode()));
+      if(version!==renderVersion||!active)return false;
+      $('viewport').scrollTop=(active.scroll||0)*Math.max(0,$('viewport').scrollHeight-$('viewport').clientHeight);
+      return true;
+    }finally{if(version===renderVersion)$('pageLoading').hidden=true;}
+  }
   const version = ++renderVersion; renderJob?.cancel();
   $('pageLoading').hidden = false;
   updateControls();
@@ -196,9 +231,9 @@ let turning = false;
 async function goPage(number) {
   if (!active || turning || opening || zooming) return;
   const target = clamp(Math.round(number),1,active.pages); if(target === active.page) return;
-  turning = true; const old = active.page; active.page = target;
+  turning = true; const old = active.page, oldScroll=active.scroll||0; active.page = target;active.scroll=0;
   try { if (await renderPage()) { active.openedAt = Date.now(); await persist(); } }
-  catch(e) { if(active) {active.page = old; updateControls();} toast(pdfError(e)); }
+  catch(e) { if(active) {active.page = old;active.scroll=oldScroll; updateControls();} toast(pdfError(e)); }
   finally { turning = false; $('pageLoading').hidden = true; }
 }
 $('previous').onclick = () => goPage(active.page-1); $('next').onclick = () => goPage(active.page+1);
@@ -215,6 +250,8 @@ $('zoomOut').onclick = () => setZoom(zoom-.25); $('zoomIn').onclick = () => setZ
 $('bookmark').onclick = async () => {
   if(!active) return;
   const old = [...active.bookmarks]; const page = active.page;
+  active.bookmarkOffsets ||= {};
+  if(old.includes(page))delete active.bookmarkOffsets[page];else active.bookmarkOffsets[page]=active.scroll||0;
   active.bookmarks = old.includes(page) ? old.filter(p => p !== page) : [...old,page].sort((a,b) => a-b);
   if(!await persist() && active) active.bookmarks = old;
   updateControls();
@@ -222,8 +259,25 @@ $('bookmark').onclick = async () => {
 $('bookmarks').onclick = () => {
   if(!active) return;
   showModal(`<h2>Закладки</h2>${active.bookmarks.length ? active.bookmarks.map(page => `<button class="dialog-action" data-page="${page}">Страница ${page}${page === active.page ? ' · Вы здесь' : ''}</button>`).join('') : '<p>Сохраните важное место кнопкой закладки вверху экрана.</p>'}`);
-  $('modalContent').querySelectorAll('[data-page]').forEach(button => button.onclick = () => { $('modal').close(); goPage(Number(button.dataset.page)); });
+  $('modalContent').querySelectorAll('[data-page]').forEach(button => button.onclick = async () => {
+    $('modal').close();const page=Number(button.dataset.page);await goPage(page);
+    if(active&&ebook){active.scroll=active.bookmarkOffsets?.[page]||0;$('viewport').scrollTop=active.scroll*Math.max(0,$('viewport').scrollHeight-$('viewport').clientHeight);await persist();}
+  });
 };
+let scrollTimer;
+$('viewport').addEventListener('scroll',()=>{
+  if(!active||!ebook||opening||turning||zooming)return;
+  active.scroll=$('viewport').scrollTop/Math.max(1,$('viewport').scrollHeight-$('viewport').clientHeight);
+  $('percent').textContent=`${progress(active)}% прочитано`;
+  clearTimeout(scrollTimer);scrollTimer=setTimeout(()=>{if(active)persist();},600);
+},{passive:true});
+$('contents').onclick=()=>{
+  if(!ebook)return;
+  showModal(`<h2>Оглавление</h2>${ebook.toc.map(item=>`<button class="dialog-action" data-toc-page="${item.page}" data-toc-anchor="${escape(item.anchor||'')}">${escape(item.title)}</button>`).join('')}`);
+  $('modalContent').querySelectorAll('[data-toc-page]').forEach(button=>button.onclick=async()=>{$('modal').close();await goPage(Number(button.dataset.tocPage));scrollToAnchor(button.dataset.tocAnchor);});
+};
+function scrollToAnchor(anchor){if(!anchor)return;const element=[...$('textPage').querySelectorAll('[data-anchor]')].find(n=>n.dataset.anchor===anchor);element?.scrollIntoView({block:'start'});}
+$('textPage').addEventListener('click',async event=>{const link=event.target.closest('[data-book-page]');if(!link)return;event.preventDefault();await goPage(Number(link.dataset.bookPage));scrollToAnchor(link.dataset.bookAnchor);});
 let touchStart = null, pinch = null;
 $('viewport').addEventListener('touchstart',e => {
   if(e.touches.length === 2) { touchStart = null; pinch = {distance:Math.hypot(e.touches[0].clientX-e.touches[1].clientX,e.touches[0].clientY-e.touches[1].clientY), zoom}; }
