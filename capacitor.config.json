@@ -1,0 +1,8 @@
+{
+  "appId": "com.lumi.reader",
+  "appName": "LUMI Reader",
+  "webDir": "dist",
+  "server": { "androidScheme": "https" },
+  "android": { "allowMixedContent": false, "backgroundColor": "#F6F3EC" },
+  "plugins": { "SystemBars": { "insetsHandling": "native", "style": "DEFAULT" } }
+}

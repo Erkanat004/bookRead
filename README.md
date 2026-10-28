@@ -99,4 +99,3 @@ npm run build
 - [GitHub: скачивание артефактов](https://docs.github.com/en/actions/managing-workflow-runs-and-deployments/managing-workflow-runs/downloading-workflow-artifacts)
 
 PDF.js распространяется по Apache-2.0, Capacitor и Vite — по MIT. Зависимости устанавливаются из npm только при разработке и сборке; их лицензии остаются в пакетах, лицензия PDF.js включается в web-ресурсы.
-
