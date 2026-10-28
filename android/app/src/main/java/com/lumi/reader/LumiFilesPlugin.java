@@ -14,7 +14,6 @@ import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.ActivityCallback;
 import com.getcapacitor.annotation.CapacitorPlugin;
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
@@ -132,7 +131,9 @@ public class LumiFilesPlugin extends Plugin {
         io.execute(() -> {
             try {
                 AtomicFile file = libraryFile();
-                String json = file.exists() ? new String(file.readFully(), StandardCharsets.UTF_8) : "";
+                File base = file.getBaseFile();
+                boolean exists = base.exists() || new File(base.getPath() + ".bak").exists();
+                String json = exists ? new String(file.readFully(), StandardCharsets.UTF_8) : "";
                 JSObject result = new JSObject(); result.put("json", json); call.resolve(result);
             } catch (Exception e) { call.reject("Не удалось прочитать библиотеку.", e); }
         });
@@ -159,3 +160,4 @@ public class LumiFilesPlugin extends Plugin {
     }
     @Override protected void handleOnDestroy() { io.shutdown(); }
 }
+
