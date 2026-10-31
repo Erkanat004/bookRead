@@ -43,6 +43,7 @@ const cases=[
  const browser=await chromium.launch({headless:true,...(process.env.CHROMIUM_EXECUTABLE?{executablePath:process.env.CHROMIUM_EXECUTABLE}:{})});
  try{
   const context=await browser.newContext({viewport:{width:390,height:844},isMobile:true,hasTouch:true});
+  await context.addInitScript(()=>{if(!localStorage.getItem('lumi-reading'))localStorage.setItem('lumi-reading',JSON.stringify({mode:'scroll'}));});
   const page=await context.newPage(),errors=[],external=[];
   page.on('pageerror',e=>errors.push(e.message));page.on('request',r=>{if(!/^(http:\/\/127\.0\.0\.1|blob:|data:)/.test(r.url()))external.push(r.url());});
   await page.goto(process.env.LUMI_URL||'http://127.0.0.1:4180/');

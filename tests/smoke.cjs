@@ -24,9 +24,12 @@ function samplePdf(title='A quiet chapter', color='0.20 0.30 0.26') {
   const browser = await chromium.launch(options);
   try {
     const context = await browser.newContext({viewport:{width:390,height:844},deviceScaleFactor:1,isMobile:true,hasTouch:true});
-    const errors = [], external = [];
+    const errors = [], external = [], workerWarnings=[];let workers=0,hmrConnected=false;
     const page = await context.newPage();
     page.on('pageerror',e => errors.push(e.message));
+    page.on('worker',()=>workers++);
+    page.on('websocket',socket=>socket.on('framereceived',event=>{if(String(event.payload).includes('"type":"connected"'))hmrConnected=true;}));
+    page.on('console',m=>{if(/fake worker|failed to connect to websocket|WebSocket connection.*failed/i.test(m.text()))workerWarnings.push(m.text());});
     page.on('console',m => { if(m.type() === 'error' || m.type() === 'warning') console.log('browser:',m.text()); });
     page.on('request',r => { if(!/^(http:\/\/127\.0\.0\.1|blob:|data:)/.test(r.url())) external.push(r.url()); });
     await page.goto(process.env.LUMI_URL || 'http://127.0.0.1:4173/');
@@ -97,7 +100,8 @@ function samplePdf(title='A quiet chapter', color='0.20 0.30 0.26') {
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),true);
     await page.emulateMedia({reducedMotion:'reduce'});
     assert.equal(await page.locator('.book-card').evaluate(el => getComputedStyle(el).animationName),'none');
-    assert.deepEqual(errors,[]); assert.deepEqual(external,[]);
+    assert.deepEqual(errors,[]); assert.deepEqual(external,[]);assert.deepEqual(workerWarnings,[]);assert.ok(workers>0,'PDF.js did not create a real worker');
+    if(process.env.CHECK_HMR==='1')assert.ok(hmrConnected,'Vite HMR WebSocket never connected');
     console.log('PASS: import, cover, render, paging, zoom, bookmarks, persisted resume, offline reading, theme, search, rename, delete, invalid PDF, mobile/landscape, reduced motion; no external requests or JS errors.');
     await context.close();
   } finally { await browser.close(); }

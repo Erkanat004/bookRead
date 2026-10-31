@@ -1,12 +1,19 @@
 import './style.css';
 import './reading.css';
+import './book-style.css';
 import { getDocument, GlobalWorkerOptions } from 'pdfjs-dist/legacy/build/pdf.mjs';
+import pdfWorkerUrl from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url';
 import { native, loadState, saveState, importNative, putFile, fileSource, removeFile, onAndroidBack, exitApp } from './storage.js';
 import { clamp, progress, cleanTitle, readableSize, orderedBooks, fileFormat } from './model.js';
 import { openEbook } from './ebooks.js';
+import { FONTS, DEFAULT_READING, normalizeReading, loadReading, saveReading, applyReading, BookPages, animateLeaf } from './reading-settings.js';
 
-GlobalWorkerOptions.workerSrc = '/pdfjs/pdf.worker.min.mjs';
+GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 const $ = id => document.getElementById(id);
+let reading=loadReading();
+const leaves=new BookPages($('viewport'),$('textPage'));
+const textReading=()=>!!ebook&&!ebook.imageOnly;
+let flipping=false;
 const paths = {
   plus:'M12 5v14M5 12h14', search:'m21 21-4.5-4.5M19 10.5a8.5 8.5 0 1 1-17 0 8.5 8.5 0 0 1 17 0',
   moon:'M20.9 13a9 9 0 0 1-9.9-9.9A9 9 0 1 0 20.9 13Z', sun:'M12 3V1m0 22v-2M3 12H1m22 0h-2M5.6 5.6 4.2 4.2m15.6 15.6-1.4-1.4M5.6 18.4l-1.4 1.4M19.8 4.2l-1.4 1.4M16 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0',
@@ -49,7 +56,7 @@ $('library').addEventListener('click', event => {
   if (menu) bookMenu(menu.dataset.menu);
 });
 async function persist() { try { await saveState(state); return true; } catch (e) { toast('Не удалось сохранить изменения. Проверьте свободную память.'); console.error(e); return false; } }
-function showModal(html) { $('modalContent').innerHTML = html; if (!$('modal').open) $('modal').showModal(); }
+function showModal(html) { $('modal').classList.remove('settings-sheet');$('modal').removeAttribute('aria-labelledby');$('modalContent').innerHTML = html; if (!$('modal').open) $('modal').showModal(); }
 $('closeModal').onclick = () => $('modal').close();
 $('modal').onclick = event => { if (event.target === $('modal')) { const r = $('modal').getBoundingClientRect(); if (event.clientX < r.left || event.clientX > r.right || event.clientY < r.top || event.clientY > r.bottom) $('modal').close(); } };
 function bookMenu(id) {
@@ -74,6 +81,7 @@ function pdfError(error) {
   if (error?.name === 'PasswordException') return 'PDF защищён паролем. Сохраните копию без пароля и добавьте её заново.';
   if (error?.name === 'InvalidPDFException') return 'PDF повреждён или имеет неподдерживаемый формат.';
   if (error?.name === 'QuotaExceededError') return 'Недостаточно места для книги. Освободите память устройства.';
+  if (/fetch|worker|dynamically imported module|network/i.test(error?.message||'')) return 'Не удалось загрузить обработчик книги. В браузере перезапустите npm run dev и обновите страницу. Для офлайн-просмотра: npm start.';
   return error?.message || 'Не удалось открыть PDF. Проверьте файл и свободную память.';
 }
 function pdfTask(url) {
@@ -138,6 +146,7 @@ async function disposePdf() {
   renderVersion++; renderJob?.cancel(); renderJob = null;
   const task = loadingTask; loadingTask = null; pdf = null;
   if(ebook)await ebook.dispose();ebook=null;
+  leaves.enabled=false;leaves.index=0;leaves.count=1;$('viewport').classList.remove('book-pages');$('textPage').classList.remove('book-layout');
   $('textPage').innerHTML='';$('textPage').hidden=true;$('pageWrap').hidden=false;
   if (task) await task.destroy().catch(() => {});
   if (source?.revoke) URL.revokeObjectURL(source.url);
@@ -151,7 +160,8 @@ async function openBook(id) {
     source = await fileSource(book);
     if((book.format||'pdf')==='pdf'){loadingTask=pdfTask(source.url);pdf=await loadingTask.promise;}
     else ebook=await openEbook(source,{...book,name:book.title});
-    active = book; active.pages = (pdf||ebook).numPages; active.page = clamp(active.page,1,active.pages); zoom = 1;
+    active = book; active.pages = (pdf||ebook).numPages; active.page = clamp(active.page,1,active.pages); zoom = textReading()?reading.size/18:1;
+    applyReading($('reader'),$('textPage'),reading);
     $('contents').hidden=!ebook?.toc.length;
     $('readerTitle').textContent = active.title; $('reader').hidden = false; $('library').hidden = true;
     document.body.style.overflow = 'hidden'; await renderPage();
@@ -169,16 +179,19 @@ async function closeReader() {
 $('back').onclick = closeReader;
 function updateControls() {
   if (!active) return;
-  $('pageNumber').textContent = `${active.page} / ${active.pages}`;
-  $('readerSubtitle').textContent = `${ebook?.unit?.toUpperCase()||'СТРАНИЦА'} ${active.page} ИЗ ${active.pages}`;
+  $('viewport').classList.toggle('can-pan',!textReading()&&zoom>1.01);
+  $('pageNumber').textContent = leaves.enabled?`${leaves.index+1} / ${leaves.count}`:`${active.page} / ${active.pages}`;
+  $('readerSubtitle').textContent = `${ebook?.unit?.toUpperCase()||'СТРАНИЦА'} ${active.page} ИЗ ${active.pages}${leaves.enabled?' · ЛИСТ '+(leaves.index+1):''}`;
+  $('readingHint').textContent=leaves.enabled?'Листайте свайпом или стрелками':textReading()?'Прокручивайте текст':'Время для себя';
   $('progress').max = active.pages; $('progress').value = active.page;
   $('percent').textContent = `${progress(active)}% прочитано`;
-  $('previous').disabled = active.page <= 1; $('next').disabled = active.page >= active.pages;
+  $('previous').disabled = active.page <= 1&&(!leaves.enabled||leaves.index===0); $('next').disabled = active.page >= active.pages&&(!leaves.enabled||leaves.index===leaves.count-1);
   const textMode=ebook&&!ebook.imageOnly;
-  $('zoomReset').textContent = textMode?`${Math.round(18*zoom)} пт`:`${Math.round(zoom*100)}%`;
+  $('zoomReset').textContent = textMode?`${reading.size} пт`:`${Math.round(zoom*100)}%`;
   $('zoomIn').setAttribute('aria-label',textMode?'Увеличить размер текста':'Увеличить масштаб');
   $('zoomOut').setAttribute('aria-label',textMode?'Уменьшить размер текста':'Уменьшить масштаб');
-  $('zoomOut').disabled = zoom <= 1; $('zoomIn').disabled = zoom >= 3;
+  $('zoomOut').disabled = flipping||(textMode?reading.size<=16:zoom<=1); $('zoomIn').disabled = flipping||(textMode?reading.size>=42:zoom>=3);
+  $('zoomReset').disabled=flipping;
   const marked = active.bookmarks.includes(active.page);
   $('bookmark').setAttribute('aria-pressed', marked);
   $('bookmark').setAttribute('aria-label',marked ? 'Удалить закладку' : 'Добавить закладку');
@@ -192,12 +205,12 @@ async function renderPage() {
       if(version!==renderVersion||!active)return false;
       $('pageWrap').hidden=true;$('textPage').hidden=false;
       $('textPage').classList.toggle('image-mode',ebook.imageOnly);
-      $('textPage').style.fontSize=`${18*zoom}px`;
+      applyReading($('reader'),$('textPage'),reading);
       $('textPage').style.setProperty('--image-zoom',zoom);
       $('textPage').innerHTML=html;
       await Promise.allSettled([...$('textPage').querySelectorAll('img')].map(img=>img.decode()));
       if(version!==renderVersion||!active)return false;
-      $('viewport').scrollTop=(active.scroll||0)*Math.max(0,$('viewport').scrollHeight-$('viewport').clientHeight);
+      leaves.layout(reading,!ebook.imageOnly,active.scroll||0);updateControls();
       return true;
     }finally{if(version===renderVersion)$('pageLoading').hidden=true;}
   }
@@ -228,24 +241,39 @@ async function renderPage() {
   finally { if(version === renderVersion) { renderJob = null; $('pageLoading').hidden = true; } }
 }
 let turning = false;
-async function goPage(number) {
-  if (!active || turning || opening || zooming) return;
+async function goPage(number,fromTurn=false) {
+  if (!active || turning || opening || zooming || flipping&&!fromTurn) return;
   const target = clamp(Math.round(number),1,active.pages); if(target === active.page) return;
   turning = true; const old = active.page, oldScroll=active.scroll||0; active.page = target;active.scroll=0;
   try { if (await renderPage()) { active.openedAt = Date.now(); await persist(); } }
   catch(e) { if(active) {active.page = old;active.scroll=oldScroll; updateControls();} toast(pdfError(e)); }
   finally { turning = false; $('pageLoading').hidden = true; }
 }
-$('previous').onclick = () => goPage(active.page-1); $('next').onclick = () => goPage(active.page+1);
+async function turnReading(direction) {
+  if(!active||opening||turning||zooming||flipping)return;
+  const within=leaves.enabled&&(direction>0?leaves.index<leaves.count-1:leaves.index>0);
+  if(!within&&(direction>0?active.page>=active.pages:active.page<=1))return;
+  const book=active;flipping=true;$('reader').classList.add('is-flipping');updateControls();
+  try {
+    await animateLeaf($('viewport'),direction,'out',reading.animation);
+    if(active!==book)return;
+    if(within){leaves.go(leaves.index+direction);active.scroll=leaves.position();updateControls();await persist();}
+    else {await goPage(active.page+direction,true);if(active===book&&leaves.enabled&&direction<0){leaves.go(leaves.count-1);active.scroll=leaves.position();updateControls();await persist();}}
+    if(active===book)await animateLeaf($('viewport'),direction,'in',reading.animation);
+  } catch(e){toast(pdfError(e));}
+  finally{flipping=false;$('reader').classList.remove('is-flipping');updateControls();}
+}
+$('previous').onclick = () => turnReading(-1); $('next').onclick = () => turnReading(1);
 $('progress').oninput = () => { if(active) $('pageNumber').textContent = `${$('progress').value} / ${active.pages}`; };
 $('progress').onchange = () => goPage(Number($('progress').value));
 $('pageNumber').onclick = () => {
   if(!active) return;
-  showModal(`<h2>Перейти к странице</h2><label class="book-meta" for="jumpPage">От 1 до ${active.pages}</label><input id="jumpPage" class="dialog-input" type="number" min="1" max="${active.pages}" value="${active.page}"><button id="jump" class="primary">Перейти</button>`);
-  $('jump').onclick = () => { const n = Number($('jumpPage').value); if(!Number.isInteger(n) || n < 1 || n > active.pages) { $('jumpPage').reportValidity(); return; } $('modal').close(); goPage(n); };
+  const max=leaves.enabled?leaves.count:active.pages, current=leaves.enabled?leaves.index+1:active.page;
+  showModal(`<h2>Перейти к странице</h2><p>${leaves.enabled?'Страница текущего раздела':'Номер страницы или фрагмента'}</p><label class="book-meta" for="jumpPage">От 1 до ${max}</label><input id="jumpPage" class="dialog-input" type="number" min="1" max="${max}" value="${current}"><button id="jump" class="primary">Перейти</button>`);
+  $('jump').onclick = async () => { const n = Number($('jumpPage').value); if(!Number.isInteger(n) || n < 1 || n > max) { $('jumpPage').reportValidity(); return; } $('modal').close();if(leaves.enabled){leaves.go(n-1);active.scroll=leaves.position();updateControls();await persist();}else goPage(n); };
 };
 let zooming = false;
-async function setZoom(value) { if(!active || opening || turning || zooming) return; zooming = true; zoom = clamp(value,1,3); try { await renderPage(); } catch(e) { toast(pdfError(e)); } finally { zooming = false; } }
+async function setZoom(value) { if(!active || opening || turning || zooming||flipping) return; zooming = true;zoom=clamp(value,textReading()?16/18:1,textReading()?42/18:3);try {if(textReading()){reading.size=Math.round(zoom*18);await changeReading(reading);}else await renderPage();}catch(e){toast(pdfError(e));}finally{zooming=false;} }
 $('zoomOut').onclick = () => setZoom(zoom-.25); $('zoomIn').onclick = () => setZoom(zoom+.25); $('zoomReset').onclick = () => setZoom(1);
 $('bookmark').onclick = async () => {
   if(!active) return;
@@ -261,13 +289,13 @@ $('bookmarks').onclick = () => {
   showModal(`<h2>Закладки</h2>${active.bookmarks.length ? active.bookmarks.map(page => `<button class="dialog-action" data-page="${page}">Страница ${page}${page === active.page ? ' · Вы здесь' : ''}</button>`).join('') : '<p>Сохраните важное место кнопкой закладки вверху экрана.</p>'}`);
   $('modalContent').querySelectorAll('[data-page]').forEach(button => button.onclick = async () => {
     $('modal').close();const page=Number(button.dataset.page);await goPage(page);
-    if(active&&ebook){active.scroll=active.bookmarkOffsets?.[page]||0;$('viewport').scrollTop=active.scroll*Math.max(0,$('viewport').scrollHeight-$('viewport').clientHeight);await persist();}
+    if(active&&ebook){active.scroll=active.bookmarkOffsets?.[page]||0;leaves.layout(reading,!ebook.imageOnly,active.scroll);updateControls();await persist();}
   });
 };
 let scrollTimer;
 $('viewport').addEventListener('scroll',()=>{
-  if(!active||!ebook||opening||turning||zooming)return;
-  active.scroll=$('viewport').scrollTop/Math.max(1,$('viewport').scrollHeight-$('viewport').clientHeight);
+  if(!active||!ebook||opening||turning||zooming||flipping)return;
+  active.scroll=leaves.position();
   $('percent').textContent=`${progress(active)}% прочитано`;
   clearTimeout(scrollTimer);scrollTimer=setTimeout(()=>{if(active)persist();},600);
 },{passive:true});
@@ -276,8 +304,34 @@ $('contents').onclick=()=>{
   showModal(`<h2>Оглавление</h2>${ebook.toc.map(item=>`<button class="dialog-action" data-toc-page="${item.page}" data-toc-anchor="${escape(item.anchor||'')}">${escape(item.title)}</button>`).join('')}`);
   $('modalContent').querySelectorAll('[data-toc-page]').forEach(button=>button.onclick=async()=>{$('modal').close();await goPage(Number(button.dataset.tocPage));scrollToAnchor(button.dataset.tocAnchor);});
 };
-function scrollToAnchor(anchor){if(!anchor)return;const element=[...$('textPage').querySelectorAll('[data-anchor]')].find(n=>n.dataset.anchor===anchor);element?.scrollIntoView({block:'start'});}
+function scrollToAnchor(anchor){if(!anchor)return;const element=[...$('textPage').querySelectorAll('[data-anchor]')].find(n=>n.dataset.anchor===anchor);leaves.toAnchor(element);if(active){active.scroll=leaves.position();updateControls();persist();}}
 $('textPage').addEventListener('click',async event=>{const link=event.target.closest('[data-book-page]');if(!link)return;event.preventDefault();await goPage(Number(link.dataset.bookPage));scrollToAnchor(link.dataset.bookAnchor);});
+let settingsSaveTimer;
+async function changeReading(values) {
+  reading=normalizeReading(values);
+  try{saveReading(reading);}catch{toast('Не удалось сохранить оформление. Проверьте свободное место.');}
+  applyReading($('reader'),$('textPage'),reading);
+  if(active&&ebook){zoom=ebook.imageOnly?zoom:reading.size/18;leaves.layout(reading,!ebook.imageOnly,active.scroll||0);active.scroll=leaves.position();}
+  updateControls();
+  clearTimeout(settingsSaveTimer);settingsSaveTimer=setTimeout(()=>{if(active)persist();},300);
+}
+function showReadingSettings() {
+  const select=(key,label,items)=>`<label class="settings-row"><span>${label}</span><select data-reading="${key}" aria-label="${label}">${items.map(([value,title])=>`<option value="${value}"${reading[key]===value?' selected':''}>${title}</option>`).join('')}</select></label>`;
+  const range=(key,label,min,max,step,unit)=>`<label class="settings-range"><span><span>${label}</span><output data-value="${key}">${reading[key]}${unit}</output></span><input type="range" data-reading="${key}" aria-label="${label}" min="${min}" max="${max}" step="${step}" value="${reading[key]}"></label>`;
+  showModal(`<div class="settings-top"><h2 id="readingSettingsTitle">Ваше чтение</h2><button id="closeReadingSettings" class="icon-button" aria-label="Закрыть настройки">×</button></div><p class="settings-intro">${textReading()?'Оформление применяется сразу и сохраняется на устройстве.':'PDF и изображения сохраняют исходную вёрстку. Шрифт можно менять в EPUB, FB2 и текстовых документах.'}</p><div id="readingPreview" class="reading-preview">Ещё одна страница.<br>И целый мир между строк.</div><fieldset class="settings-group"${textReading()?'':' disabled'}><legend>Типографика</legend>${select('font','Шрифт',Object.entries(FONTS).map(([key,font])=>[key,font.label]))}${range('size','Размер текста',16,42,1,' пт')}${range('line','Межстрочный интервал',1.35,2.2,.05,'')}${range('margin','Поля страницы',12,40,2,' пкс')}${select('weight','Насыщенность',[['400','Обычная'],['500','Средняя'],['600','Полужирная']])}${select('style','Начертание',[['normal','Прямое'],['italic','Курсив']])}${select('align','Выравнивание',[['left','По левому краю'],['justify','По ширине']])}${select('mode','Способ чтения',[['pages','Как книга'],['scroll','Прокрутка']])}</fieldset><fieldset class="settings-group"><legend>Атмосфера</legend>${select('paper','Бумага',[['system','Как в библиотеке'],['cream','Кремовая'],['sepia','Сепия'],['night','Ночная']])}${select('animation','Перелистывание',[['curl','Книжный поворот'],['slide','Сдвиг'],['none','Без анимации']])}</fieldset><button id="resetReading" class="settings-reset">Вернуть исходное оформление</button>`);
+  $('modal').classList.add('settings-sheet');$('modal').setAttribute('aria-labelledby','readingSettingsTitle');
+  const preview=()=>{
+    const el=$('readingPreview');if(!el)return;
+    el.style.fontFamily=FONTS[reading.font].family;el.style.fontSize=`${Math.min(24,reading.size)}px`;el.style.lineHeight=reading.line;el.style.fontWeight=reading.weight;el.style.fontStyle=reading.style;
+    const colors=getComputedStyle($('reader'));el.style.background=colors.getPropertyValue('--surface');el.style.color=colors.getPropertyValue('--text');
+    $('modalContent').querySelectorAll('[data-value]').forEach(output=>output.textContent=reading[output.dataset.value]+(output.dataset.value==='size'?' пт':output.dataset.value==='margin'?' пкс':''));
+  };
+  $('modalContent').querySelectorAll('[data-reading]').forEach(input=>input.oninput=async()=>{await changeReading({...reading,[input.dataset.reading]:input.value});preview();});
+  $('resetReading').onclick=async()=>{await changeReading(DEFAULT_READING);showReadingSettings();};
+  $('closeReadingSettings').onclick=()=>$('modal').close();
+  preview();
+}
+$('readerSettings').onclick=showReadingSettings;
 let touchStart = null, pinch = null;
 $('viewport').addEventListener('touchstart',e => {
   if(e.touches.length === 2) { touchStart = null; pinch = {distance:Math.hypot(e.touches[0].clientX-e.touches[1].clientX,e.touches[0].clientY-e.touches[1].clientY), zoom}; }
@@ -288,16 +342,16 @@ $('viewport').addEventListener('touchmove',e => {
 },{passive:false});
 $('viewport').addEventListener('touchend',e => {
   if(pinch) { if(!e.touches.length) { const target = pinch.target; pinch = null; if(target) setZoom(target); } return; }
-  if(!touchStart || !active || zoom > 1.01) return;
+  if(!touchStart || !active || !textReading()&&zoom > 1.01) return;
   const dx = e.changedTouches[0].clientX-touchStart.x, dy = e.changedTouches[0].clientY-touchStart.y;
-  if(Math.abs(dx)>60 && Math.abs(dx)>Math.abs(dy)*1.6 && Date.now()-touchStart.time<650) goPage(active.page + (dx<0 ? 1:-1));
+  if(Math.abs(dx)>60 && Math.abs(dx)>Math.abs(dy)*1.6 && Date.now()-touchStart.time<650) turnReading(dx<0?1:-1);
   touchStart = null;
 },{passive:true});
 $('viewport').addEventListener('touchcancel',() => { touchStart = null; pinch = null; });
 document.addEventListener('keydown',e => {
   if(!active || $('modal').open || /INPUT|SELECT|TEXTAREA/.test(e.target.tagName)) return;
-  if(e.key === 'ArrowRight') {e.preventDefault();goPage(active.page+1);}
-  if(e.key === 'ArrowLeft') {e.preventDefault();goPage(active.page-1);}
+  if(e.key === 'ArrowRight') {e.preventDefault();turnReading(1);}
+  if(e.key === 'ArrowLeft') {e.preventDefault();turnReading(-1);}
   if(e.key === 'Escape') closeReader();
 });
 let resizeTimer;
