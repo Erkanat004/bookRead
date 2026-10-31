@@ -1,3 +1,4 @@
+.reader{color:var(--text)}
 .reader[data-paper=cream]{--bg:#f6f0e3;--surface:#fff8e9;--text:#302b22;--muted:#72664f;--line:#d8ceb9;--gold:#866329;--accent:#e9d8b6}
 .reader[data-paper=sepia]{--bg:#e6d3ac;--surface:#efdfbe;--text:#382b1c;--muted:#6c583b;--line:#bda77e;--gold:#76501d;--accent:#dfc89c}
 .reader[data-paper=night]{--bg:#111413;--surface:#1c211e;--text:#e3dfd2;--muted:#b5b09e;--line:#41483f;--gold:#d9bb80;--accent:#3e3829}
@@ -33,3 +34,4 @@ dialog.settings-sheet{position:fixed;inset:auto 0 0;margin:0 auto;max-height:85d
 .settings-reset{font:13px system-ui,sans-serif;text-decoration:underline;text-underline-offset:4px;min-height:48px;width:100%;color:var(--muted)}
 @media(max-width:390px){.reader-footer .icon-button{min-width:40px}.reader-footer .zoom-reset{min-width:48px}.reader-footer{padding-inline:8px}.page-number{font-size:12px;min-width:48px}.settings-sheet{padding-inline:20px}}
 @media(prefers-reduced-motion:reduce){.reader.is-flipping{perspective:none}}
+

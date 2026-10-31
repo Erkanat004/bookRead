@@ -34,7 +34,10 @@ const fs=require('node:fs');
   await page.getByRole('combobox',{name:'Начертание',exact:true}).selectOption('italic');
   await page.getByRole('slider',{name:'Размер текста',exact:true}).fill('23');
   await page.getByRole('slider',{name:'Поля страницы',exact:true}).fill('32');
-  await page.getByRole('button',{name:'Закрыть',exact:true}).click();
+  await page.getByRole('combobox',{name:'Бумага',exact:true}).selectOption('night');
+  assert.equal(await page.locator('#back').evaluate(el=>getComputedStyle(el).color),'rgb(227, 223, 210)','Night paper should keep navigation readable');
+  await page.getByRole('combobox',{name:'Бумага',exact:true}).selectOption('sepia');
+  await page.getByRole('button',{name:'Закрыть настройки',exact:true}).click();
   assert.match(await page.locator('#textPage').evaluate(el=>getComputedStyle(el).fontFamily),/system-ui/);
   assert.equal(await page.locator('#textPage').evaluate(el=>getComputedStyle(el).fontSize),'23px');
   assert.equal(await page.locator('#reader').getAttribute('data-paper'),'sepia');
@@ -67,3 +70,4 @@ const fs=require('node:fs');
   console.log('PASS: real screen pagination, swipe and animated page turns, font/style/size/margins/paper, live layout, persistent leaf/settings/bookmark, chapter boundaries, landscape, reduced motion.');
  }finally{await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});
+
